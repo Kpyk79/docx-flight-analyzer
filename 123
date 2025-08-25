@@ -1,0 +1,211 @@
+[app]
+title = Аналіз DOCX польотів
+package.name = docx_flight_analyzer
+package.domain = org.example
+source.dir = .
+source.include_exts = py,kv,txt,md,docx
+version = 0.1.0
+requirements = python3,kivy,python-docx,plyer,lxml,pillow
+orientation = portrait
+fullscreen = 0
+android.api = 35
+android.minapi = 24
+android.archs = arm64-v8a,armeabi-v7a,x86_64
+android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE
+android.bootstrap = sdl2
+
+[buildozer]
+log_level = 2
+warn_on_root = 0
+
+from kivy.app import App
+from kivy.lang import Builder
+from kivy.properties import DictProperty, StringProperty
+from kivy.clock import mainthread
+from kivy.core.window import Window
+
+from threading import Thread
+from analyzer import analyze_doc
+
+try:
+    from plyer import filechooser
+except Exception:
+    filechooser = None
+
+KV = """
+#:import json json
+Screen:
+    BoxLayout:
+        orientation: 'vertical'
+        padding: dp(16)
+        spacing: dp(12)
+
+        Label:
+            text: "Аналіз польотів з DOCX"
+            font_size: '22sp'
+            size_hint_y: None
+            height: self.texture_size[1] + dp(6)
+            bold: True
+
+        Label:
+            text: app.status_text
+            size_hint_y: None
+            height: self.texture_size[1] + dp(6)
+            color: (0.7, 0.7, 0.7, 1)
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+
+            Button:
+                text: "Обрати .docx"
+                on_release: app.pick_file()
+
+            Button:
+                text: "Очистити"
+                on_release: app.clear_results()
+
+        ScrollView:
+            do_scroll_x: False
+            GridLayout:
+                id: results_grid
+                cols: 1
+                size_hint_y: None
+                height: self.minimum_height
+                row_default_height: dp(32)
+                row_force_default: False
+"""
+
+class FlightAnalyzerApp(App):
+    results = DictProperty({})
+    status_text = StringProperty("Завантажте файл .docx для аналізу.")
+
+    def build(self):
+        self.title = "Аналіз DOCX польотів"
+        try:
+            Window.minimum_width, Window.minimum_height = (360, 640)
+        except Exception:
+            pass
+        return Builder.load_string(KV)
+
+    def clear_results(self):
+        self.results = {}
+        self.status_text = "Дані очищено. Оберіть новий файл."
+        self.populate_results({})
+
+    def pick_file(self):
+        if filechooser is not None:
+            filechooser.open_file(on_selection=self._on_file_chosen, filters=["*.docx'])
+        else:
+            self.status_text = "Файловий діалог недоступний."
+
+    def _on_file_chosen(self, selections):
+        if not selections:
+            self.status_text = "Файл не обрано."
+            return
+        path = selections[0]
+        self.status_text = f"Обрано файл: {path}. Виконується аналіз..."
+        Thread(target=self._analyze_async, args=(path,), daemon=True).start()
+
+    def _analyze_async(self, path):
+        try:
+            res = analyze_doc(path)
+            self._apply_results(res)
+        except Exception as e:
+            self._apply_error(str(e))
+
+    @mainthread
+    def _apply_results(self, res):
+        self.results = res or {}
+        self.status_text = "Готово."
+        self.populate_results(self.results)
+
+    @mainthread
+    def _apply_error(self, message):
+        self.results = {}
+        self.status_text = f"Помилка: {message}"
+        self.populate_results({})
+
+    def populate_results(self, res):
+        grid = self.root.ids.results_grid
+        grid.clear_widgets()
+
+        if not res:
+            from kivy.uix.label import Label
+            grid.add_widget(Label(text="Немає результатів"))
+            return
+
+        from kivy.uix.label import Label
+        from kivy.metrics import dp
+
+        def add_section(title, items):
+            grid.add_widget(Label(text=f"[b]{title}[/b]", markup=True, size_hint_y=None, height=dp(32)))
+            if not items:
+                grid.add_widget(Label(text="—", size_hint_y=None, height=dp(28)))
+                return
+            for k, v in items.items():
+                grid.add_widget(Label(text=f"{k}: {v}", size_hint_y=None, height=dp(28)))
+
+        add_section("Усього вильотів", res.get("total", {}))
+        add_section("Вечірні вильоти", res.get("evening", {}))
+
+if __name__ == "__main__":
+    FlightAnalyzerApp().run()
+
+# Docx Flight Analyzer
+
+Проєкт Kivy для аналізу польотів з DOCX.
+
+kivy==2.3.0
+python-docx
+plyer
+lxml
+pillow
+
+from docx import Document
+from datetime import datetime
+from collections import defaultdict
+import re
+
+group_map = {
+    "Кодима": "1. Кодима", "Шершенці": "1. Кодима", "Загнітків": "1. Кодима",
+    "Станіславка": "2. Станіславка", "Тимкове": "2. Станіславка", "Чорна": "2. Станіславка",
+    "Окни": "3. Окни", "Ткаченкове": "3. Окни", "Гулянка": "3. Окни", "Новосеменівка": "3. Окни",
+    "Великокомарівка": "4. Великокомарівка", "Павлівка": "4. Великокомарівка",
+    "Велика Михайлівка": "5. Велика Михайлівка", "Гребеники": "5. Велика Михайлівка", "Слов’яносербка": "5. Велика Михайлівка",
+    "Степанівка": "6. Степанівка", "Лучинське": "6. Степанівка", "Кучурган": "6. Степанівка", "Лиманське": "6. Степанівка"
+}
+
+def analyze_doc(path: str):
+    total_flights = defaultdict(int)
+    evening_flights = defaultdict(int)
+    doc = Document(path)
+
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            cell_text = ' '.join(cells)
+
+            found_group = None
+            for name, group in group_map.items():
+                if re.search(fr"\b{name}\b", cell_text, re.IGNORECASE):
+                    found_group = group
+                    break
+            if not found_group:
+                continue
+
+            time_matches = re.findall(r"\b\d{1,2}:\d{2}\b", cell_text)
+            if time_matches:
+                try:
+                    t = datetime.strptime(time_matches[0], "%H:%M")
+                    total_flights[found_group] += 1
+                    if t.hour >= 18:
+                        evening_flights[found_group] += 1
+                except Exception:
+                    continue
+
+    return {
+        "total": dict(sorted(total_flights.items())),
+        "evening": dict(sorted(evening_flights.items()))
+    }
