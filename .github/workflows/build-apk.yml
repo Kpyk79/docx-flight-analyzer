@@ -1,4 +1,3 @@
-
 name: Build APK
 
 on:
@@ -8,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04   # 👈 краще 20.04 ніж 22.04 (сумісність вища)
 
     steps:
     - name: Checkout repository
@@ -21,12 +20,13 @@ jobs:
             python3-pip python3-setuptools python3-dev python3-venv \
             libffi-dev libssl-dev liblzma-dev libbz2-dev zlib1g-dev \
             libncurses5 libtinfo5
-        pip install --upgrade pip Cython==0.29.36 virtualenv
+        pip install --upgrade pip wheel Cython==0.29.36 virtualenv
         pip install buildozer
 
     - name: Build APK
       run: |
-        buildozer -v android debug
+        export PATH=$PATH:$HOME/.local/bin
+        buildozer android debug
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
